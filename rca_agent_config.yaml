@@ -1,0 +1,477 @@
+agent:
+  name: RCA_PRESCRIPTIVE_AGENT
+  database: RCA_DEMO
+  schema: RCA_TOOLS
+  fqn: RCA_DEMO.RCA_TOOLS.RCA_PRESCRIPTIVE_AGENT
+  model: claude-4-sonnet
+  warehouse: MANOHAR_MISHRA_WH
+  budget:
+    seconds: 300
+    tokens: 60000
+  description: >
+    Domain-agnostic Root Cause Analysis & Prescriptive Analytics Agent.
+    Works across healthcare, retail/FMCG, logistics, finance, manufacturing,
+    marketing, exports, or any tabular dataset.
+    Transitions from "What happened?" -> "Why?" -> "How to fix it?"
+
+prerequisites:
+  database: RCA_DEMO
+  schema: RCA_DEMO.RCA_TOOLS
+  stage: RCA_DEMO.RCA_TOOLS.RCA_STAGE
+  setup_sql: |
+    CREATE DATABASE IF NOT EXISTS RCA_DEMO;
+    CREATE SCHEMA IF NOT EXISTS RCA_DEMO.RCA_TOOLS;
+    CREATE STAGE IF NOT EXISTS RCA_DEMO.RCA_TOOLS.RCA_STAGE;
+
+agent_spec_format:
+  spec_language: YAML
+  note: >
+    CREATE AGENT uses YAML (not JSON) inside $$ delimiters.
+    Generic tools MUST include input_schema.
+    tool_resources for stored procedures use type: "procedure".
+    tool_resources for UDFs use type: "function".
+
+column_classification:
+  description: >
+    Schema Discovery auto-classifies every numeric column as either an ID or a measure.
+    The agent MUST respect this classification throughout all phases.
+  id_detection_rules:
+    by_suffix:
+      - _ID
+      - _KEY
+      - _FK
+      - _PK
+      - _CODE
+      - _NUM
+      - _NUMBER
+      - _SEQ
+      - _IDX
+    by_exact_name:
+      - ID
+      - KEY
+      - PK
+      - FK
+      - INDEX
+      - SEQ
+      - ROW_NUMBER
+      - ROWNUM
+    by_prefix:
+      - SK_
+      - FK_
+      - PK_
+    by_cardinality: >
+      If a numeric column has >90% distinct values and >20 unique values,
+      it is reclassified as a likely ID even if its name doesn't match patterns.
+  output_buckets:
+    id_columns_NEVER_USE_AS_TREATMENT_OR_METRIC:
+      description: >
+        Surrogate keys, foreign keys, sequence numbers.
+        Examples: CUSTOMER_ID, TRANSACTION_ID, PRODUCT_ID, CLAIM_ID, ORDER_ID.
+        NEVER use as metrics, treatment variables, confounder variables, or dimension slicers.
+    measure_columns_USE_AS_METRICS_AND_TREATMENTS:
+      description: >
+        Real numeric measures representing business quantities.
+        Examples: REVENUE, QUANTITY, PRICE, DISCOUNT_PCT, DAYS_SUPPLY, PATIENT_PAY, WEIGHT, DELAY_HOURS.
+        Use as outcome metric, treatment variables, or decision variables in optimization.
+    dimension_columns_USE_FOR_SLICING_AND_CONFOUNDERS:
+      description: >
+        Text and boolean columns representing categories.
+        Examples: REGION, PRODUCT_TYPE, PHARMACY_TYPE, CHANNEL, IS_REFILL, CATEGORY.
+        Use for dimension slicing in descriptive analytics, and as confounder columns in causal inference.
+
+execution_behavior:
+  description: >
+    The agent has exactly ONE pause point (Phase 2 Human Checkpoint).
+    After user confirms, Phases 3 through Report run back-to-back without stopping.
+  phases:
+    phase_0: "Schema Discovery - auto-run"
+    phase_1: "Descriptive Analytics - auto-run"
+    phase_2: "Human Checkpoint - ONLY pause point. Agent presents findings, proposes causal factors, waits for user."
+    phase_3: "Causal Inference - auto-run after confirmation"
+    phase_4: "Prescriptive Optimization - auto-run"
+    phase_5: "Monte Carlo Simulation - auto-run"
+    report: "Generate Report - auto-run, delivers Executive Report"
+  continuous_after_checkpoint: true
+  reason_for_300s_budget: >
+    Phases 3-5 plus report generation can require 4+ tool calls in sequence.
+    With retries, the chain can reach 10+ calls. 180s was insufficient; 300s accommodates
+    the full pipeline including error recovery.
+
+domain_detection_keywords:
+  healthcare:
+    - patient
+    - diagnosis
+    - clinic
+    - hospital
+    - appointment
+    - doctor
+    - treatment
+    - ward
+    - discharge
+    - prescription
+    - lab
+    - vitals
+    - footfall
+    - readmission
+    - icd
+    - cpt
+  retail_fmcg:
+    - product
+    - sku
+    - store
+    - sales
+    - transaction
+    - customer
+    - order
+    - inventory
+    - promotion
+    - price
+    - category
+    - brand
+    - pos
+    - market_share
+    - basket
+    - churn
+  logistics:
+    - shipment
+    - port
+    - container
+    - route
+    - carrier
+    - warehouse
+    - delivery
+    - tracking
+    - freight
+    - transit
+    - delay
+    - vessel
+    - export
+    - import
+    - customs
+  finance:
+    - account
+    - transaction
+    - balance
+    - payment
+    - loan
+    - credit
+    - debit
+    - revenue
+    - expense
+    - profit
+    - margin
+    - budget
+    - forex
+    - interest
+    - default
+  manufacturing:
+    - production
+    - defect
+    - assembly
+    - machine
+    - quality
+    - batch
+    - yield
+    - downtime
+    - maintenance
+    - capacity
+    - oee
+  marketing:
+    - campaign
+    - impression
+    - click
+    - ctr
+    - conversion
+    - cpc
+    - spend
+    - roi
+    - channel
+    - attribution
+    - lead
+    - funnel
+    - engagement
+
+workflow_phases:
+  phase_0_schema_discovery:
+    tool_name: schema_discovery
+    procedure: RCA_DEMO.RCA_TOOLS.SCHEMA_DISCOVERY
+    purpose: >
+      Introspects INFORMATION_SCHEMA to discover tables, columns, data types.
+      Auto-detects business domain via keyword matching.
+      CRITICALLY: classifies every column into ID vs Measure vs Dimension.
+      Also checks for semantic views in the same schema.
+      Returns sample data preview (3 rows per table).
+    parameters:
+      - name: TARGET_DATABASE
+        type: STRING
+        required: true
+      - name: TARGET_SCHEMA
+        type: STRING
+        required: true
+    packages:
+      - snowflake-snowpark-python
+      - pandas
+    returns: >
+      VARIANT with keys: IMPORTANT_column_classification
+      (id_columns_NEVER_USE_AS_TREATMENT_OR_METRIC, measure_columns_USE_AS_METRICS_AND_TREATMENTS,
+      dimension_columns_USE_FOR_SLICING_AND_CONFOUNDERS, time_columns),
+      tables (with per-table column breakdown), semantic_views, sample_data
+
+  phase_1_descriptive_analytics:
+    tool_name: descriptive_analytics
+    procedure: RCA_DEMO.RCA_TOOLS.DESCRIPTIVE_ANALYTICS
+    purpose: >
+      Verifies user claims with automatic statistical test selection.
+      Auto-selects tests: Welch t-test (2 groups), ANOVA + Kruskal-Wallis (>2 groups),
+      z-score anomalies, OLS trend detection.
+      DIMENSION_COLUMNS must be text/boolean only. NEVER pass numeric ID columns.
+    parameters:
+      - name: QUERY_CONTEXT
+        type: STRING
+        required: true
+        description: The user's original question
+      - name: METRIC_COLUMN
+        type: STRING
+        required: true
+        description: Numeric MEASURE column (NOT an ID). e.g. REVENUE, PATIENT_PAY
+      - name: DIMENSION_COLUMNS
+        type: STRING
+        required: true
+        description: Comma-separated TEXT/BOOLEAN dimensions. NEVER use ID columns.
+      - name: TIME_COLUMN
+        type: STRING
+        required: true
+        description: Date/timestamp column
+      - name: TABLE_FQN
+        type: STRING
+        required: true
+        description: Fully qualified table (DB.SCHEMA.TABLE)
+      - name: COMPARISON_PERIODS
+        type: STRING
+        required: false
+        description: >
+          JSON with period_a and period_b.
+          Example: {"period_a":{"start":"2024-01-01","end":"2024-03-31"},
+                    "period_b":{"start":"2024-04-01","end":"2024-06-30"}}
+      - name: FILTERS
+        type: STRING
+        required: false
+        description: SQL WHERE clause (without WHERE keyword)
+    packages:
+      - snowflake-snowpark-python
+      - pandas
+      - scipy
+      - numpy
+      - statsmodels
+    statistical_methods:
+      parametric:
+        - "Welch t-test: 2-group period comparison"
+        - "One-way ANOVA: multi-group comparison (>2 groups)"
+      non_parametric:
+        - "Mann-Whitney U: non-parametric period comparison"
+        - "Kruskal-Wallis H: non-parametric group comparison (>2 groups)"
+      detection:
+        - "Z-score anomaly detection (|z| > 2.5)"
+        - "OLS trend detection via linear regression slope + p-value"
+    auto_selection_logic: |
+      if 2 groups -> Welch t-test
+      if >2 groups -> ANOVA + Kruskal-Wallis
+      if time series with >=3 periods -> OLS trend slope
+      always -> z-score anomalies
+    returns: >
+      VARIANT with keys: verification (basic stats + sum),
+      hypothesis_tests (auto-selected), slicing_analysis (per dimension),
+      anomalies (outlier records), trend_analysis (slope + direction + p-value), summary
+
+  phase_2_human_checkpoint:
+    description: >
+      ONLY pause point. Agent presents findings with numbers and p-values.
+      Proposes treatment variables (ONLY measures, NEVER IDs) and confounders
+      (text/boolean dimensions). Asks user to confirm or revise before proceeding.
+
+  phase_3_causal_inference:
+    tool_name: causal_inference
+    procedure: RCA_DEMO.RCA_TOOLS.CAUSAL_INFERENCE
+    purpose: >
+      Identifies root causes with statistical significance.
+      TREATMENT_COLUMNS must be real measures (NEVER ID columns).
+      CONFOUNDER_COLUMNS must be text/boolean dimensions.
+    parameters:
+      - name: OUTCOME_COLUMN
+        type: STRING
+        required: true
+      - name: TREATMENT_COLUMNS
+        type: STRING
+        required: true
+        description: >
+          Comma-separated MEASURE columns only.
+          Good: QUANTITY, PRICE, DISCOUNT_PCT, DAYS_SUPPLY.
+          Bad: CUSTOMER_ID, PRODUCT_ID, TRANSACTION_TYPE_ID.
+      - name: CONFOUNDER_COLUMNS
+        type: STRING
+        required: true
+        description: Comma-separated TEXT/BOOLEAN dimension columns
+      - name: TABLE_FQN
+        type: STRING
+        required: true
+      - name: TIME_COLUMN
+        type: STRING
+        required: false
+        description: For Granger causality tests
+      - name: FILTERS
+        type: STRING
+        required: false
+    packages:
+      - snowflake-snowpark-python
+      - pandas
+      - scipy
+      - numpy
+      - statsmodels
+      - scikit-learn
+    statistical_methods:
+      - "OLS Regression with confounder control"
+      - "Inverse Propensity Weighting (IPW) for ATE"
+      - "Propensity Score via Logistic Regression"
+      - "Granger Causality Tests (temporal lag detection)"
+    returns: >
+      VARIANT with keys: causal_analysis (per-factor coefficients, p-values, CI),
+      attribution (ranked % per factor), granger_tests, regression_diagnostics
+
+  phase_4_prescriptive_optimization:
+    tool_name: prescriptive_optimization
+    procedure: RCA_DEMO.RCA_TOOLS.PRESCRIPTIVE_OPTIMIZATION
+    purpose: >
+      Finds mathematically optimal interventions using PuLP linear programming.
+      Auto-derives constraints from historical data boundaries (P5/P95).
+    parameters:
+      - name: OBJECTIVE
+        type: STRING
+        required: true
+        description: >
+          JSON: {"direction":"maximize","terms":[{"variable":"x","coefficient":1.0}]}
+      - name: DECISION_VARIABLES
+        type: STRING
+        required: true
+        description: >
+          JSON array: [{"name":"x","column":"COL","use_historical_bounds":true}]
+      - name: CONSTRAINTS_JSON
+        type: STRING
+        required: true
+      - name: TABLE_FQN
+        type: STRING
+        required: true
+      - name: HISTORICAL_CONTEXT
+        type: STRING
+        required: false
+    packages:
+      - snowflake-snowpark-python
+      - pandas
+      - numpy
+      - scipy
+      - pulp
+    returns: >
+      VARIANT with keys: optimization (status, optimal_value),
+      recommendations, constraints_applied, sensitivity, historical_bounds
+
+  phase_5_monte_carlo:
+    tool_name: monte_carlo_simulation
+    procedure: RCA_DEMO.RCA_TOOLS.MONTE_CARLO_SIMULATION
+    purpose: >
+      Stress-tests recommendations with 10,000 randomized simulations.
+      Supported distributions: normal, uniform, triangular, lognormal, beta.
+    parameters:
+      - name: STRATEGY_JSON
+        type: STRING
+        required: true
+      - name: VARIABLE_DISTRIBUTIONS
+        type: STRING
+        required: true
+      - name: NUM_SIMULATIONS
+        type: INT
+        required: false
+        default: 10000
+      - name: TABLE_FQN
+        type: STRING
+        required: false
+      - name: METRIC_COLUMN
+        type: STRING
+        required: false
+    packages:
+      - snowflake-snowpark-python
+      - pandas
+      - numpy
+      - scipy
+    returns: >
+      VARIANT with keys: outcome_distribution, risk_assessment,
+      var_analysis (VaR, CVaR), scenario_analysis
+
+  report_generator:
+    tool_name: generate_report
+    procedure: RCA_DEMO.RCA_TOOLS.GENERATE_RCA_REPORT
+    purpose: >
+      Compiles all phases into the Executive Diagnostic & Strategy Report.
+      Sections: Reality Check, Root Cause, Prescribed Solution, Risk & Simulation.
+    parameters:
+      - name: ORIGINAL_QUERY
+        type: STRING
+        required: true
+      - name: DESCRIPTIVE_RESULTS
+        type: STRING
+        required: true
+      - name: CAUSAL_RESULTS
+        type: STRING
+        required: true
+      - name: OPTIMIZATION_RESULTS
+        type: STRING
+        required: true
+      - name: SIMULATION_RESULTS
+        type: STRING
+        required: true
+    packages:
+      - snowflake-snowpark-python
+    returns: STRING (Markdown Executive Report)
+
+libraries:
+  core:
+    - snowflake-snowpark-python
+    - pandas
+    - numpy
+  statistical:
+    - "scipy: hypothesis testing, distributions, stats"
+    - "statsmodels: OLS regression, Granger causality, trend detection"
+    - "scikit-learn: propensity scores (LogisticRegression), LabelEncoder, StandardScaler"
+  optimization:
+    - "pulp: linear programming (LP/MILP)"
+  not_available_in_snowflake:
+    - "dowhy: NOT in Snowflake Anaconda channel. IPW implemented via statsmodels + sklearn instead."
+    - "causalml: NOT available. Custom implementation used."
+
+grants_template: |
+  GRANT USAGE ON DATABASE RCA_DEMO TO ROLE <target_role>;
+  GRANT USAGE ON SCHEMA RCA_DEMO.RCA_TOOLS TO ROLE <target_role>;
+  GRANT USAGE ON AGENT RCA_DEMO.RCA_TOOLS.RCA_PRESCRIPTIVE_AGENT TO ROLE <target_role>;
+  GRANT USAGE ON WAREHOUSE <your_warehouse> TO ROLE <target_role>;
+
+tested_on:
+  - dataset: CHECKEDUP_SI_POC_DB.DATASETS
+    domain: healthcare
+    query: "I see low revenue. Revenue is PATIENT_PAY in RXFACT."
+    result: "Agent correctly identified PATIENT_ID, DRUG_ID, etc. as IDs. Used PATIENT_PAY, QUANTITY, DAYS_SUPPLY as measures."
+  - dataset: RNDC_LLM_DB.RNDC_LLM_DATA
+    domain: retail/beverage distribution
+    query: "Low sales in 1st half of 2023 compared to 2nd half."
+    result: "Agent excluded HOUSE_ID, SALES_INVOICE_ID, TRANSACTION_TYPE_ID. Used SALES_DOLLAR_AMOUNT, SALES_PRICE, SALES_CASES_SOLD. Full report generated."
+  - dataset: BEHEALTHY_DB.CLINIC_DATA
+    domain: healthcare clinics
+    query: "Why is footfall low in my clinics after 2024?"
+    result: "Agent excluded APPOINTMENT_ID, PATIENT_ID, DOCTOR_ID, CLINIC_ID. Used WAIT_TIME_MINUTES as measure. Full pipeline completed."
+
+example_queries:
+  healthcare: "Patient footfall dropped in our pediatric wing. What happened and how do we fix it?"
+  retail: "Why did our sales drop in the South region last quarter?"
+  logistics: "Why are our port delays increasing and what's the optimal intervention?"
+  fmcg: "Market share for our detergent brand fell 3 points. Diagnose and prescribe."
+  marketing: "Our email campaign CTR dropped 40%. What caused it and how do we recover?"
+  exports: "Export volumes to EU declined this quarter. Identify the shortcoming."
+  finance: "Loan default rates spiked in Q3. Root cause and mitigation strategy?"
+  manufacturing: "Defect rate on Line 3 increased 15%. Why and what's the fix?"
