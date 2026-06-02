@@ -1,0 +1,55 @@
+```mermaid
+flowchart TD
+    U[User Query] --> Agent["Agent Orchestrator
+    RCA_PRESCRIPTIVE_AGENT
+    (claude-sonnet-4)"]
+
+    subgraph Phase0 [Phase 0: Schema Discovery]
+      C1[Tool: schema_discovery] --> P1[Proc: RCA_DEMO.RCA_TOOLS.SCHEMA_DISCOVERY]
+      P1 -->|output| M1[metadata + domain + candidates]
+    end
+
+    subgraph Phase1 [Phase 1: Descriptive Analytics]
+      C2[Tool: descriptive_analytics] --> P2[Proc: RCA_DEMO.RCA_TOOLS.DESCRIPTIVE_ANALYTICS]
+      P2 -->|output| M2[EDA + hypothesis tests + anomalies + slices]
+    end
+
+    subgraph Phase2 [Phase 2: Human Checkpoint]
+      H[Human Confirmation] -->|continue| Phase3
+      H -->|stop/revise| Agent
+    end
+
+    subgraph Phase3 [Phase 3: Causal Inference]
+      C3[Tool: causal_inference] --> P3[Proc: RCA_DEMO.RCA_TOOLS.CAUSAL_INFERENCE]
+      P3 -->|outputs| M3[OLS + IPW + Granger + attribution]
+    end
+
+    subgraph Phase4 [Phase 4: Prescriptive Optimization]
+      C4[Tool: prescriptive_optimization] --> P4[Proc: RCA_DEMO.RCA_TOOLS.PRESCRIPTIVE_OPTIMIZATION]
+      P4 -->|outputs| M4[LP solution + recommendations + hist bounds]
+    end
+
+    subgraph Phase5 [Phase 5: Monte Carlo Simulation]
+      C5[Tool: monte_carlo_simulation] --> P5[Proc: RCA_DEMO.RCA_TOOLS.MONTE_CARLO_SIMULATION]
+      P5 -->|outputs| M5[risk assessment + VaR/CVaR + scenarios]
+    end
+
+    subgraph Report [Final Report Generation]
+      C6[Tool: generate_report] --> P6[Proc: RCA_DEMO.RCA_TOOLS.GENERATE_RCA_REPORT]
+      P6 -->|output| R[Executive Diagnostic & Strategy Report]
+    end
+
+    Agent --> Phase0
+    Phase0 --> Phase1
+    Phase1 --> Phase2
+    Phase2 --> Phase3
+    Phase3 --> Phase4
+    Phase4 --> Phase5
+    Phase5 --> Report
+    Report --> Out[User Output]
+
+    classDef toolStyle fill:#f0f9ff,stroke:#0078d7,stroke-width:1px;
+    class C1,C2,C3,C4,C5,C6 toolStyle;
+    classDef procStyle fill:#f7f7f7,stroke:#333,stroke-width:1px;
+    class P1,P2,P3,P4,P5,P6 procStyle;
+```
